@@ -20,24 +20,32 @@
   /* ===================== DIALS ===================== */
   const CELL = 16;
   const FPS_MS = 88;
-  const TRAIL_ALPHA = 0.16;
 
-  const MAX_WORDS = 90;
-  const SPAWN_RATE = 0.55;
-  const WORD_ROWS_SPREAD = 8;
+  // Less lingering / less layering:
+  const TRAIL_ALPHA = 0.14;          // higher = faster decay (less smear)
 
+  // Word rain:
+  const MAX_WORDS = 90;              // fewer = less overlap
+  const SPAWN_RATE = 0.55;           // higher = more words; keep modest
+  const WORD_ROWS_SPREAD = 8;        // spawn in a band above top, not a line
+
+  // Slow top -> slightly faster mid (not fast overall):
   const SLOW_TOP_FRAC = 0.33;
   const TOP_MULT = 0.18;
   const MID_MULT = 0.55;
 
+  // Bottom fade out:
   const BOTTOM_FADE_FRAC = 0.12;
 
-  const DRIFT_X = 0.12;
+  // Small drifting so it doesn't form vertical columns:
+  const DRIFT_X = 0.12;              // max horizontal drift per tick (cells)
   const DRIFT_X_JITTER = 0.10;
 
-  const GLYPH_SPARK_RATE = 0.22;
-  const GLYPH_SPARK_COUNT = 2;
+  // How “wordy” vs “glyphy” it looks:
+  const GLYPH_SPARK_RATE = 0.22;     // little matrix glyphs sprinkled around words
+  const GLYPH_SPARK_COUNT = 2;       // per word, per tick (small)
 
+  // Startup name (type -> hold -> fall away):
   const START_TEXT = "TREVSHADOW";
   const TYPE_MS_PER_CHAR = 90;
   const HOLD_AFTER_TYPE_MS = 650;
@@ -58,139 +66,269 @@
     "!@#$%^&*()_+-=[]{};:,.<>/?";
 
   const CODE_TOKENS = [
-    "const","let","function","return",
-    "tick()","resize()","Math.random()",
-    "ctx.fillRect","canvas","CELL","FPS_MS",
-    "TREVSHADOW",">.<"
+    "const", "let", "function", "return",
+    "tick()", "resize()", "requestAnimationFrame",
+    "Math.random()", "ctx.fillRect", "canvas", "CELL", "FPS_MS",
+    "speedMultiplierForY", "bottomFadeAlpha",
+    "TREVSHADOW", ">.<"
   ];
 
+  // A code-ish glyph pool so the world is made of its own symbols.
   const CODE_TEXT = `
 const CELL=16,FPS_MS=88;
 function tick(){ return; }
+function speedMultiplierForY(y){ return y; }
+function bottomFadeAlpha(y){ return y; }
 // TREVSHADOW >.<
 `;
   const CODE_GLYPHS = Array.from(new Set(
-    CODE_TEXT.replace(/\s+/g," ").split("").filter(ch => ch !== "\n")
+    CODE_TEXT.replace(/\s+/g," ").split("").filter(ch => ch !== "\n" && ch !== "\r")
   )).join("");
 
-  const randFrom = s => s[(Math.random() * s.length) | 0];
+  const randFrom = (s) => s[(Math.random() * s.length) | 0];
   const randChar = () => randFrom(MATRIX_CHARS);
-  const randGlyph = () => (Math.random() < 0.3 ? randFrom(CODE_GLYPHS) : randChar());
+  const randGlyph = () => (Math.random() < 0.30 ? randFrom(CODE_GLYPHS) : randChar());
   const randToken = () => CODE_TOKENS[(Math.random() * CODE_TOKENS.length) | 0];
 
-  /* ===================== DPR SAFE ===================== */
+  /* ===================== DPR SAFE SIZING ===================== */
   let dpr = 1, cssW = 0, cssH = 0, W = 0, H = 0;
 
   function resize() {
-    dpr = Math.max(1, devicePixelRatio || 1);
-    canvas.width = innerWidth * dpr;
-    canvas.height = innerHeight * dpr;
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(innerWidth * dpr);
+    canvas.height = Math.floor(innerHeight * dpr);
     cssW = canvas.width / dpr;
     cssH = canvas.height / dpr;
 
-    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.font = `${CELL}px monospace`;
     ctx.textBaseline = "top";
 
-    W = Math.floor(cssW / CELL);
-    H = Math.floor(cssH / CELL);
+    W = Math.max(20, Math.floor(cssW / CELL));
+    H = Math.max(12, Math.floor(cssH / CELL));
 
     ctx.fillStyle = "#000";
-    ctx.fillRect(0,0,cssW,cssH);
+    ctx.fillRect(0, 0, cssW, cssH);
   }
 
-  /* ===================== ✨ CLEAN 3D DRAW CELL ✨ ===================== */
   function drawCell(x, y, ch, color, alpha=1) {
-    if (x < 0 || x >= W || y < 0 || y >= H || alpha <= 0) return;
-
-    const p = y / Math.max(1, H - 1);
-    const depth = p * p;
-
-    const parallax = (depth - 0.5) * 0.18;
-    const px = (x + parallax) * CELL;
-    const py = y * CELL;
-
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    if (alpha <= 0) return;
     const prev = ctx.globalAlpha;
-
-    // soft depth shadow (single pass — no rectangles)
-    ctx.globalAlpha = alpha * 0.22;
-    ctx.fillStyle = "#00180a";
-    ctx.fillText(ch, px + 1, py + 1);
-
-    // main glyph
-    ctx.globalAlpha = alpha * (0.55 + depth * 0.45);
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = color;
-    ctx.fillText(ch, px, py);
-
+    ctx.fillText(ch, x * CELL, y * CELL);
     ctx.globalAlpha = prev;
   }
 
-  /* ===================== SPEED CURVES ===================== */
+  /* ===================== SPEED + FADE CURVES ===================== */
   function speedMultiplierForY(y) {
-    const p = y / Math.max(1, H - 1);
+    const p = y / Math.max(1, (H - 1)); // 0..1
     if (p <= SLOW_TOP_FRAC) return TOP_MULT;
-    const t = (p - SLOW_TOP_FRAC) / (1 - SLOW_TOP_FRAC);
-    return TOP_MULT + (MID_MULT - TOP_MULT) * (t * t);
+    const t = (p - SLOW_TOP_FRAC) / Math.max(0.0001, (1 - SLOW_TOP_FRAC));
+    const eased = t * t;
+    return TOP_MULT + (MID_MULT - TOP_MULT) * eased;
   }
 
   function bottomFadeAlpha(y) {
-    const p = y / Math.max(1, H - 1);
-    const s = 1 - BOTTOM_FADE_FRAC;
-    return p <= s ? 1 : Math.max(0, 1 - (p - s) / BOTTOM_FADE_FRAC);
+    const p = y / Math.max(1, (H - 1));
+    const start = 1 - BOTTOM_FADE_FRAC;
+    if (p <= start) return 1;
+    const t = (p - start) / Math.max(0.0001, BOTTOM_FADE_FRAC);
+    return Math.max(0, 1 - t);
   }
 
-  /* ===================== WORDS ===================== */
+  /* ===================== WORD PARTICLES ===================== */
+  // Each word particle falls with slight drift; text mutates a bit so it feels alive.
   const words = [];
 
   function spawnWord() {
     if (words.length >= MAX_WORDS) return;
     const token = randToken();
+
+    // Spawn scattered across X, and in a band above top so it doesn’t form a hard line.
+    const x = Math.random() * (W - Math.max(3, token.length));
+    const y = -1 - Math.random() * WORD_ROWS_SPREAD;
+
+    // Keep motion slow overall; use multiplier curve later.
+    const baseVy = 0.55 + Math.random() * 0.35;      // cell-units per tick (before curve)
+    const vx = (Math.random() * 2 - 1) * DRIFT_X;    // gentle drift
+
+    // Style
+    const hue = headColor();
     words.push({
-      x: Math.random() * (W - token.length),
-      y: -1 - Math.random() * WORD_ROWS_SPREAD,
-      vx: (Math.random()*2-1)*DRIFT_X,
-      vy: 0.55 + Math.random()*0.35,
+      x, y, vx, vy: baseVy,
       token,
-      colHead: headColor(),
-      colBody: BODY_GREEN
+      colHead: hue,
+      colBody: (Math.random() < 0.5 ? BODY_GREEN : BODY_MID),
+      life: 1.0,
+      scramble: Math.random() * 9999
     });
   }
 
-  /* ===================== LOOP ===================== */
-  let last = performance.now(), acc = 0;
+  // Draw token characters “loosely” so it’s readable but not a solid block.
+  function drawTokenLoose(wx, wy, token, headCol, bodyCol) {
+    const baseX = wx | 0;
+    const baseY = wy | 0;
+
+    for (let i = 0; i < token.length; i++) {
+      // gaps reduce “blocky slabs”
+      if (Math.random() < 0.18) continue;
+
+      const jitterY = (Math.random() < 0.35) ? ((Math.random() < 0.5) ? -1 : 1) : 0;
+      const xx = baseX + i;
+      const yy = baseY + jitterY;
+
+      const isHead = (i === 0 || Math.random() < 0.12);
+      const col = isHead ? headCol : bodyCol;
+
+      // small shimmer: occasionally swap a character for a code glyph
+      const ch = (Math.random() < 0.10) ? randGlyph() : token[i];
+
+      const a = bottomFadeAlpha(yy);
+      drawCell(xx, yy, ch, col, a);
+    }
+  }
+
+  function sprinkleGlyphsAround(wx, wy) {
+    if (Math.random() > GLYPH_SPARK_RATE) return;
+    const count = GLYPH_SPARK_COUNT;
+    for (let k = 0; k < count; k++) {
+      const dx = ((Math.random() * 7) | 0) - 3;
+      const dy = ((Math.random() * 5) | 0) - 2;
+      const xx = (wx | 0) + dx;
+      const yy = (wy | 0) + dy;
+      const a = 0.28 * bottomFadeAlpha(yy);
+      drawCell(xx, yy, randGlyph(), BODY_DARK, a);
+    }
+  }
+
+  /* ===================== STARTUP TITLE ===================== */
+  const t0 = performance.now();
+  const typeDoneAt = START_TEXT.length * TYPE_MS_PER_CHAR;
+  const holdEndsAt = typeDoneAt + HOLD_AFTER_TYPE_MS;
+  const startupTotal = holdEndsAt + (START_TEXT.length - 1) * FALL_GAP_MS + FALL_DURATION_MS;
+  let startupDone = false;
+
+  function drawTextCentered(text, row, color) {
+    const startX = Math.max(0, ((W - text.length) / 2) | 0);
+    for (let i = 0; i < text.length; i++) {
+      drawCell(startX + i, row, text[i], color, 1);
+    }
+    return startX;
+  }
+
+  /* ===================== SAFE FIXED STEP LOOP ===================== */
+  let last = performance.now();
+  let accTime = 0;
+  const MAX_TICKS_PER_FRAME = 6;
 
   function loop(now) {
-    acc += Math.min(now - last, 200);
+    accTime += Math.min(now - last, 200);
     last = now;
 
-    while (acc >= FPS_MS) {
-      tick();
-      acc -= FPS_MS;
+    let ticks = 0;
+    while (accTime >= FPS_MS && ticks < MAX_TICKS_PER_FRAME) {
+      tick(now - t0);
+      accTime -= FPS_MS;
+      ticks++;
     }
+    if (ticks >= MAX_TICKS_PER_FRAME) accTime = 0;
+
     requestAnimationFrame(loop);
   }
 
-  function tick() {
+  function tick(elapsedMs) {
+    // fade using DPR-safe css size to avoid rectangles
     ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
-    ctx.fillRect(0,0,cssW,cssH);
+    ctx.fillRect(0, 0, cssW, cssH);
 
-    if (Math.random() < SPAWN_RATE) spawnWord();
+    // spawn words (scattered, not a line)
+    if (words.length < MAX_WORDS && Math.random() < SPAWN_RATE) spawnWord();
+    if (words.length < MAX_WORDS && Math.random() < (SPAWN_RATE * 0.35)) spawnWord();
 
+    // update + draw words
     for (let i = words.length - 1; i >= 0; i--) {
       const w = words[i];
-      w.y += w.vy * speedMultiplierForY(w.y);
-      w.x += w.vx;
 
-      for (let c = 0; c < w.token.length; c++) {
-        drawCell(w.x + c, w.y, 
-          Math.random() < 0.1 ? randGlyph() : w.token[c],
-          c === 0 ? w.colHead : w.colBody,
-          bottomFadeAlpha(w.y)
-        );
+      // motion
+      const mult = speedMultiplierForY(w.y);
+      w.y += w.vy * mult;
+      w.x += w.vx + (Math.random() * 2 - 1) * DRIFT_X_JITTER * 0.02;
+
+      // wrap X softly
+      if (w.x < -w.token.length) w.x = W + 1;
+      if (w.x > W + 1) w.x = -w.token.length;
+
+      // mutate slightly so it “changes the moment it moves”
+      w.scramble += 0.35;
+      if (Math.random() < 0.10) {
+        // swap a random char in token with a glyph for a split second
+        const idx = (Math.random() * w.token.length) | 0;
+        w.token = w.token.substring(0, idx) + randGlyph() + w.token.substring(idx + 1);
+      } else if (Math.random() < 0.05) {
+        // refresh to a clean readable token occasionally
+        w.token = randToken();
       }
 
-      if (w.y > H + 4) words.splice(i,1);
+      // draw token scattered/loose
+      drawTokenLoose(w.x, w.y, w.token, w.colHead, w.colBody);
+      sprinkleGlyphsAround(w.x, w.y);
+
+      // remove when fully off screen
+      if (w.y > H + 6) words.splice(i, 1);
+    }
+
+    // rare >.< in the field (as a word)
+    if (Math.random() < 0.008 && words.length < MAX_WORDS) {
+      words.push({
+        x: Math.random() * (W - 3),
+        y: -1 - Math.random() * 6,
+        vx: (Math.random() * 2 - 1) * DRIFT_X,
+        vy: 0.55 + Math.random() * 0.25,
+        token: ">.<",
+        colHead: "#ffffff",
+        colBody: "#ff4dff",
+        life: 1,
+        scramble: Math.random() * 9999
+      });
+    }
+
+    // Startup: TREVSHADOW types, holds, then falls away one letter at a time
+    if (!startupDone) {
+      if (elapsedMs < startupTotal) {
+        const row = Math.min(H - 3, 4); // near top, like a “boot” header
+        const typedCount = Math.min(START_TEXT.length, (elapsedMs / TYPE_MS_PER_CHAR) | 0);
+        const typed = START_TEXT.slice(0, typedCount);
+
+        const baseX = drawTextCentered(typed, row, BODY_GREEN);
+
+        if (elapsedMs > holdEndsAt) {
+          for (let i = 0; i < START_TEXT.length; i++) {
+            const letterStart = holdEndsAt + i * FALL_GAP_MS;
+            const t = (elapsedMs - letterStart) / FALL_DURATION_MS;
+            if (t >= 0 && t <= 1) {
+              // instead of fragments, we spawn tiny wordlets under each letter (less layering)
+              if (Math.random() < 0.20 && words.length < MAX_WORDS) {
+                words.push({
+                  x: baseX + i + (Math.random() * 2 - 1) * 0.4,
+                  y: row + 1 + Math.random() * 1.2,
+                  vx: (Math.random() * 2 - 1) * DRIFT_X * 0.6,
+                  vy: 0.55 + Math.random() * 0.25,
+                  token: (Math.random() < 0.60) ? START_TEXT[i] : randGlyph(),
+                  colHead: "#ffffff",
+                  colBody: BODY_GREEN,
+                  life: 1,
+                  scramble: Math.random() * 9999
+                });
+              }
+            }
+          }
+        }
+      } else {
+        startupDone = true;
+      }
     }
   }
 

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Matrix Rain</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <script>
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    // Tune these for vibe
+    const FONT_SIZE = 16;        // bigger = chunkier
+    const FADE = 0.08;           // lower = longer trails, higher = shorter
+    const GREEN = "#00ff66";
+
+    const CHARS =
+      "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
+      "ハヒフヘホマミムメモヤユヨラリルレロワ" +
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    let drops = [];
+    let columns = 0;
+
+    function setup() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+
+      // Draw in CSS pixels while keeping crispness on high-DPI screens
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      columns = Math.floor(window.innerWidth / FONT_SIZE);
+      drops = new Array(columns).fill(1);
+
+      ctx.font = `${FONT_SIZE}px monospace`;
+      ctx.textBaseline = "top";
+
+      // Clear once
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+
+    function frame() {
+      // Fade the screen slightly to create trails
+      ctx.fillStyle = `rgba(0,0,0,${FADE})`;
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+      ctx.fillStyle = GREEN;
+
+      for (let i = 0; i < drops.length; i++) {
+        const ch = CHARS[(Math.random() * CHARS.length) | 0];
+        const x = i * FONT_SIZE;
+        const y = drops[i] * FONT_SIZE;
+
+        ctx.fillText(ch, x, y);
+
+        // Reset after it passes bottom, randomly
+        if (y > window.innerHeight && Math.random() > 0.975) drops[i] = 0;
+        drops[i]++;
+      }
+
+      requestAnimationFrame(frame);
+    }
+
+    window.addEventListener("resize", setup);
+    setup();
+    frame();
+  </script>
+</body>
+</html>

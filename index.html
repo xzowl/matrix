@@ -34,10 +34,10 @@
 
     // ===== "POWERSHELL LOOK" DIALS =====
     const CELL = 16;
-    const FPS_MS = 77;            // slower like you set
+    const FPS_MS = 88;            // overall a bit slower than before (was 77)
 
     // Top "layer" of letters (always present)
-    const CEILING_ROWS = 3;       // ✅ FIX: must be integer (was 2.5)
+    const CEILING_ROWS = 3;
     const TRANSITION_ROWS = 7;
     const CRUMBLE_RATE = 0.020;
     const FRAG_MAX = 1700;
@@ -45,7 +45,7 @@
     // Rain behavior (continuous)
     const RAIN_PASSES = 3;
 
-    // ✅ FIX: must produce integers >= 1 (no 0.5 / no 0)
+    // integer speeds (safe)
     const SPEED_MIN = 1;
     const SPEED_MAX = 3;
 
@@ -57,7 +57,7 @@
 
     // Living tail (keeps changing)
     const TAIL_LIVE_CELLS = 26;
-    const TAIL_SPREAD_STEP = 1;   // if phone struggles, set to 2
+    const TAIL_SPREAD_STEP = 1;
 
     // Startup word (plays ONCE, then never again)
     const START_TEXT = "TREVSHADOW";
@@ -65,6 +65,12 @@
     const HOLD_AFTER_TYPE_MS = 650;
     const FALL_GAP_MS = 140;
     const FALL_DURATION_MS = 1100;
+
+    // Speed curve + fade-out
+    const SLOW_TOP_FRAC = 0.33;       // top third = much slower
+    const TOP_MULT = 0.22;            // slower than base at top
+    const MID_MULT = 0.55;            // still slower than before overall
+    const BOTTOM_FADE_FRAC = 0.10;    // last 10% fades out
 
     // Colors
     const BODY_DARK  = "#0b6b2a";
@@ -89,6 +95,7 @@
     let ceiling = [];
     let frags = [];
     let frame = 0;
+    let dropAcc = []; // per-column fractional movement accumulator
 
     // Startup timing (once)
     const t0 = performance.now();
@@ -111,14 +118,13 @@
       drops = new Array(W);
       speed = new Array(W);
       len   = new Array(W);
+      dropAcc = new Array(W);
 
       for (let x = 0; x < W; x++) {
         drops[x] = (Math.random() * H) | 0;
-
-        // ✅ FIX: integer in [SPEED_MIN..SPEED_MAX], never 0
         speed[x] = SPEED_MIN + ((Math.random() * (SPEED_MAX - SPEED_MIN + 1)) | 0);
-
         len[x]   = Math.max(TAIL_MIN, ((Math.random() * (H * TAIL_MAX_FRAC)) | 0));
+        dropAcc[x] = 0;
       }
 
       ceiling = new Array(CEILING_ROWS);
@@ -153,13 +159,11 @@
 
     function drawTextCentered(text, row, color) {
       const startX = Math.max(0, ((W - text.length) / 2) | 0);
-      for (let i = 0; i < text.length; i++) {
-        drawCell(startX + i, row, text[i], color, 1);
-      }
+      for (let i = 0; i < text.length; i++) drawCell(startX + i, row, text[i], color, 1);
       return startX;
     }
 
-    // ✅ FIX: safe fixed-step loop (prevents mobile “spiral of death”)
+    // Safe fixed-step loop (prevents mobile spiral)
     let last = performance.now();
     let acc = 0;
     const MAX_TICKS_PER_FRAME = 6;
@@ -194,11 +198,28 @@
       return Math.max(0.0, Math.min(0.85, t));
     }
 
+    function speedMultiplierForY(y) {
+      const p = y / Math.max(1, (H - 1)); // 0..1
+      // Very slow at the top, then gently ramps to a still-slower-than-before mid speed
+      if (p <= SLOW_TOP_FRAC) return TOP_MULT;
+      const t = (p - SLOW_TOP_FRAC) / Math.max(0.0001, (1 - SLOW_TOP_FRAC));
+      const eased = t * t; // gentle ease-in
+      return TOP_MULT + (MID_MULT - TOP_MULT) * eased; // never exceeds MID_MULT
+    }
+
+    function bottomFadeAlpha(y) {
+      const p = y / Math.max(1, (H - 1)); // 0..1
+      const start = 1.0 - BOTTOM_FADE_FRAC;
+      if (p <= start) return 1;
+      const t = (p - start) / Math.max(0.0001, BOTTOM_FADE_FRAC);
+      return Math.max(0, 1 - t);
+    }
+
     function tick(elapsedMs) {
       ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
-      // ceiling crumble
+      // 1) ceiling crumble
       for (let x = 0; x < W; x++) {
         if (Math.random() < CRUMBLE_RATE) {
           const r = (Math.random() * CEILING_ROWS) | 0;
@@ -220,22 +241,20 @@
         const f = frags[i];
         f.y += f.v;
         f.life *= 0.985;
-
         const yy = (f.y | 0);
-        const a = Math.min(1, f.life) * (yy < CEILING_ROWS ? 0.75 : 1);
+        const a = Math.min(1, f.life) * (yy < CEILING_ROWS ? 0.75 : 1) * bottomFadeAlpha(yy);
         drawCell(f.x, yy, f.ch, f.col, a);
-
         if (f.y > H + 2 || f.life < 0.08) frags.splice(i, 1);
       }
 
-      // continuous rain (wrap)
+      // 3) continuous rain (wrap) with slow-top curve + bottom fade
       for (let pass = 0; pass < RAIN_PASSES; pass++) {
         for (let x = 0; x < W; x++) {
-          // speed[x] is guaranteed >= 1 now
           if ((frame % speed[x]) !== 0) continue;
 
           const yHead = drops[x];
 
+          // living tail
           const tailDraw = Math.min(len[x], TAIL_LIVE_CELLS);
           for (let t = 0; t < tailDraw; t += TAIL_SPREAD_STEP) {
             const yy = yHead - t;
@@ -246,20 +265,31 @@
             else if (t <= 2) col = BODY_GREEN;
             else if (t <= 7) col = BODY_MID;
 
-            drawCell(x, yy, randChar(), col, rainAlphaForY(yy));
+            const a = rainAlphaForY(yy) * bottomFadeAlpha(yy);
+            drawCell(x, yy, randChar(), col, a);
           }
 
           if (yHead >= 0 && yHead < H && Math.random() < 0.08) {
-            drawCell(x, yHead, randChar(), "#ffffff", rainAlphaForY(yHead));
+            const a = rainAlphaForY(yHead) * bottomFadeAlpha(yHead);
+            drawCell(x, yHead, randChar(), "#ffffff", a);
           }
 
-          drops[x]++;
+          // move: MUCH slower at top, gently faster mid, never "tons faster"
+          dropAcc[x] += speedMultiplierForY(yHead);
+          if (dropAcc[x] >= 1) {
+            const steps = Math.min(3, dropAcc[x] | 0); // cap step jumps
+            drops[x] += steps;
+            dropAcc[x] -= steps;
+          }
 
-          if (drops[x] > H + len[x]) drops[x] = 0;
+          if (drops[x] > H + len[x]) {
+            drops[x] = 0;
+            dropAcc[x] = 0;
+          }
         }
       }
 
-      // Startup once
+      // 4) Startup once (also respects bottom fade)
       if (!startupDone) {
         if (elapsedMs < startupTotal) {
           const wordRow = Math.min(H - 2, CEILING_ROWS + 2);

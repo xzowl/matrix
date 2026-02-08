@@ -72,19 +72,70 @@
     const MID_MULT = 0.55;            // still slower than before overall
     const BOTTOM_FADE_FRAC = 0.10;    // last 10% fades out
 
+    // Code-glimpse layer (very subtle)
+    const CODE_WHISPER_RATE = 0.09;   // higher = more code glimpses
+    const CODE_WHISPER_ALPHA = 0.16;  // how visible the code text is
+    const CODE_WHISPER_ROWS = 12;     // how far down code whispers can appear
+
+    // Rare >.< stamps
+    const EMOTE_RATE = 0.006;         // chance per tick to place a >.< somewhere
+
     // Colors
     const BODY_DARK  = "#0b6b2a";
     const BODY_MID   = "#00b84a";
     const BODY_GREEN = "#00ff66";
     const HEAD_COLORS = ["#00ff66", "#00ffd5", "#ff4dff", "#ffe14d", "#ffffff"];
 
+    // Main charset (katakana + alnum + symbols)
     const CHARS = (
       "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ" +
       "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
       "!@#$%^&*()_+-=[]{};:,.<>/?"
     );
 
-    const randChar = () => CHARS[(Math.random() * CHARS.length) | 0];
+    // --- The “code it’s made of” (short excerpts, shuffled into the rain) ---
+    // Keep it short-ish so it’s not huge, but recognizable.
+    const CODE_TEXT = `
+const CELL=16,FPS_MS=88,CEILING_ROWS=3,TRANSITION_ROWS=7;
+function tick(elapsedMs){
+  ctx.fillStyle=\`rgba(0,0,0,\${TRAIL_ALPHA})\`;
+  ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+}
+function speedMultiplierForY(y){
+  const p=y/Math.max(1,(H-1));
+  if(p<=SLOW_TOP_FRAC) return TOP_MULT;
+  const t=(p-SLOW_TOP_FRAC)/Math.max(0.0001,(1-SLOW_TOP_FRAC));
+  return TOP_MULT+(MID_MULT-TOP_MULT)*(t*t);
+}
+function bottomFadeAlpha(y){
+  const p=y/Math.max(1,(H-1));
+  const start=1.0-BOTTOM_FADE_FRAC;
+  if(p<=start) return 1;
+  const t=(p-start)/Math.max(0.0001,BOTTOM_FADE_FRAC);
+  return Math.max(0,1-t);
+}
+// TREVSHADOW >.<
+`;
+
+    // Build a glyph pool from CODE_TEXT (plus a few spicy extras)
+    const CODE_GLYPHS = Array.from(
+      new Set(
+        CODE_TEXT
+          .replace(/\s+/g, " ")
+          .split("")
+          .filter(ch => ch !== "\n" && ch !== "\r")
+      )
+    ).join("");
+
+    const randFrom = (s) => s[(Math.random() * s.length) | 0];
+
+    // Mix: mostly Matrix chars, sometimes code glyphs
+    function randGlyph() {
+      // ~22% chance to draw a character from the code-glyph pool
+      if (Math.random() < 0.22) return randFrom(CODE_GLYPHS);
+      return randFrom(CHARS);
+    }
+
     const headColor = () => (Math.random() < 0.70 ? HEAD_COLORS[0] : HEAD_COLORS[(Math.random() * HEAD_COLORS.length) | 0]);
 
     // Grid size in cells
@@ -130,7 +181,7 @@
       ceiling = new Array(CEILING_ROWS);
       for (let r = 0; r < CEILING_ROWS; r++) {
         ceiling[r] = new Array(W);
-        for (let x = 0; x < W; x++) ceiling[r][x] = randChar();
+        for (let x = 0; x < W; x++) ceiling[r][x] = randGlyph();
       }
 
       frags = [];
@@ -200,7 +251,6 @@
 
     function speedMultiplierForY(y) {
       const p = y / Math.max(1, (H - 1)); // 0..1
-      // Very slow at the top, then gently ramps to a still-slower-than-before mid speed
       if (p <= SLOW_TOP_FRAC) return TOP_MULT;
       const t = (p - SLOW_TOP_FRAC) / Math.max(0.0001, (1 - SLOW_TOP_FRAC));
       const eased = t * t; // gentle ease-in
@@ -215,16 +265,51 @@
       return Math.max(0, 1 - t);
     }
 
+    function stampEmote() {
+      // Place >.< as 3 cells so it renders correctly
+      const y = (Math.random() * Math.min(H - 2, Math.max(6, Math.floor(H * 0.60)))) | 0;
+      const x = (Math.random() * (W - 3)) | 0;
+      const a = 0.45 * bottomFadeAlpha(y);
+      drawCell(x + 0, y, ">", "#ffffff", a);
+      drawCell(x + 1, y, ".", "#ff4dff", a);
+      drawCell(x + 2, y, "<", "#ffffff", a);
+    }
+
+    function codeWhisper() {
+      // Faint scattered “code” glimpses behind everything (not constant)
+      if (Math.random() > CODE_WHISPER_RATE) return;
+      const y = (Math.random() * Math.min(H - 1, CODE_WHISPER_ROWS)) | 0;
+      const startX = (Math.random() * Math.max(1, W - 20)) | 0;
+      const run = 10 + ((Math.random() * 18) | 0);
+
+      // sample a slice from CODE_TEXT so you get readable-ish fragments
+      const clean = CODE_TEXT.replace(/\s+/g, " ");
+      const idx = (Math.random() * Math.max(1, clean.length - run - 1)) | 0;
+      const slice = clean.slice(idx, idx + run);
+
+      for (let i = 0; i < slice.length && (startX + i) < W; i++) {
+        const ch = slice[i];
+        // keep it subtle and “behind”
+        drawCell(startX + i, y, ch, BODY_DARK, CODE_WHISPER_ALPHA * ceilingAlphaForRow(Math.min(y, CEILING_ROWS - 1)));
+      }
+    }
+
     function tick(elapsedMs) {
       ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+      // subtle code glimpses in the background
+      codeWhisper();
+
+      // occasional >.<
+      if (Math.random() < EMOTE_RATE) stampEmote();
 
       // 1) ceiling crumble
       for (let x = 0; x < W; x++) {
         if (Math.random() < CRUMBLE_RATE) {
           const r = (Math.random() * CEILING_ROWS) | 0;
           const ch = ceiling[r][x];
-          ceiling[r][x] = randChar();
+          ceiling[r][x] = randGlyph();
           addFrag(x, r, ch, 0.6 + Math.random() * 1.2, headColor());
         }
       }
@@ -254,7 +339,7 @@
 
           const yHead = drops[x];
 
-          // living tail
+          // living tail (now uses randGlyph so the “code” shows up in the rain)
           const tailDraw = Math.min(len[x], TAIL_LIVE_CELLS);
           for (let t = 0; t < tailDraw; t += TAIL_SPREAD_STEP) {
             const yy = yHead - t;
@@ -266,18 +351,18 @@
             else if (t <= 7) col = BODY_MID;
 
             const a = rainAlphaForY(yy) * bottomFadeAlpha(yy);
-            drawCell(x, yy, randChar(), col, a);
+            drawCell(x, yy, randGlyph(), col, a);
           }
 
           if (yHead >= 0 && yHead < H && Math.random() < 0.08) {
             const a = rainAlphaForY(yHead) * bottomFadeAlpha(yHead);
-            drawCell(x, yHead, randChar(), "#ffffff", a);
+            drawCell(x, yHead, randGlyph(), "#ffffff", a);
           }
 
           // move: MUCH slower at top, gently faster mid, never "tons faster"
           dropAcc[x] += speedMultiplierForY(yHead);
           if (dropAcc[x] >= 1) {
-            const steps = Math.min(3, dropAcc[x] | 0); // cap step jumps
+            const steps = Math.min(3, dropAcc[x] | 0);
             drops[x] += steps;
             dropAcc[x] -= steps;
           }
@@ -289,7 +374,7 @@
         }
       }
 
-      // 4) Startup once (also respects bottom fade)
+      // 4) Startup once
       if (!startupDone) {
         if (elapsedMs < startupTotal) {
           const wordRow = Math.min(H - 2, CEILING_ROWS + 2);
@@ -306,7 +391,7 @@
               if (t >= 0 && t <= 1) {
                 const x = baseX + i;
                 const useLetter = (Math.random() < 0.60);
-                const ch = useLetter ? START_TEXT[i] : randChar();
+                const ch = useLetter ? START_TEXT[i] : randGlyph();
                 addFrag(x, wordRow, ch, 0.9 + Math.random() * 1.7, useLetter ? "#ffffff" : headColor());
               }
             }

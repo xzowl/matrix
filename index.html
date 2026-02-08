@@ -3,285 +3,253 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Matrix — TREVSHADOW</title>
+  <title>Matrix Terminal — TREVSHADOW</title>
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     canvas { display:block; width:100vw; height:100vh; }
-    #err{
-      position:fixed; inset:0; padding:16px;
-      font:14px/1.4 monospace; color:#fff; background:#000;
-      white-space:pre-wrap; display:none;
-    }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="err"></div>
 
 <script>
 (() => {
-  const errBox = document.getElementById("err");
-  const showErr = (e) => {
-    errBox.style.display = "block";
-    errBox.textContent = "Matrix crashed:\n\n" + (e && e.stack ? e.stack : String(e));
-  };
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha:false });
 
-  try {
-    const canvas = document.getElementById("c");
-    const ctx = canvas.getContext("2d", { alpha:false });
+  // ===== "POWERSHELL LOOK" DIALS =====
+  const CELL = 16;              // grid cell size (bigger = chunkier terminal look)
+  const FPS_MS = 55;            // higher = slower (like your PS $fpsMs)
+  const CEILING_ROWS = 10;      // top layer height
+  const CRUMBLE_RATE = 0.020;   // higher = more crumble
+  const FRAG_MAX = 1200;
 
-    // ===== MAIN DIALS =====
-    const FONT_SIZE = 14;            // smaller = more letters
-    const FADE = 0.07;               // lower = longer trails
-    const BASE_SPEED = 0.12;         // lower = slower rain
-    const SPEED_JITTER = 0.18;
-    const DENSITY_PASSES = 2;        // 2–3 = fuller wall
+  const RAIN_PASSES = 2;        // 2–3 for denser
+  const SPEED_MIN = 2;          // larger = slower columns
+  const SPEED_MAX = 8;
 
-    // Rainbow (heads only)
-    const RAINBOW_HEAD_CHANCE = 0.75;
-    const SPARKLE_CHANCE = 0.04;
+  // Trails: PS feels "not smeary". Keep this LOW or 0.
+  const TRAIL_ALPHA = 0.10;     // 0 = no trails, 0.06-0.14 = slight trails
 
-    // “Ceiling crumble” layers
-    const CEILING_ROWS = 11;         // how tall the top letter layer is
-    const CRUMBLE_RATE = 0.020;      // higher = more chunks fall
-    const CRUMBLE_FALL_SPEED = 1.35; // falling chunk speed multiplier
+  // Startup word
+  const START_TEXT = "TREVSHADOW";
+  const TYPE_MS_PER_CHAR = 90;
+  const HOLD_AFTER_TYPE_MS = 650;
+  const FALL_GAP_MS = 140;
+  const FALL_DURATION_MS = 1100;
 
-    // Startup word
-    const START_TEXT = "TREVSHADOW";
-    const TYPE_MS_PER_CHAR = 85;     // typing speed
-    const HOLD_AFTER_TYPE_MS = 600;
-    const DISSOLVE_MS = 1300;
+  // “Rainbow” like PS (limited, subtle)
+  const HEAD_COLORS = ["#00ff66", "#00ffd5", "#ff4dff", "#ffe14d", "#ffffff"]; // green, cyan, magenta, yellow, white
+  const BODY_DARK = "#0b6b2a";
+  const BODY_GREEN = "#00ff66";
 
-    const BODY_GREEN = "#00ff66";
-    const HEAD_MINT  = "#7CFFB6";
+  const CHARS = (
+    "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ" +
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+    "!@#$%^&*()_+-=[]{};:,.<>/?"
+  );
 
-    const CHARS =
-      "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
-      "ハヒフヘホマミムメモヤユヨラリルレロワ" +
-      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const randChar = () => CHARS[(Math.random() * CHARS.length) | 0];
+  const headColor = () => (Math.random() < 0.70 ? HEAD_COLORS[0] : HEAD_COLORS[(Math.random() * HEAD_COLORS.length) | 0]);
 
-    const randChar = () => CHARS[(Math.random()*CHARS.length)|0];
+  // Grid size in cells
+  let W = 0, H = 0;         // cells
+  let pxW = 0, pxH = 0;     // pixels
+  let drops = [];           // per column y (cell units)
+  let speed = [];           // per column tick divisor
+  let len = [];             // per column tail length
+  let ceiling = [];         // [row][col] char
+  let frags = [];           // falling fragments: {x,y,v, ch, col, life}
+  let frame = 0;
 
-    let columns = 0, drops = [], speeds = [];
-    let hueBase = 0;
+  function resize() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    pxW = Math.floor(window.innerWidth * dpr);
+    pxH = Math.floor(window.innerHeight * dpr);
+    canvas.width = pxW;
+    canvas.height = pxH;
 
-    // Ceiling grid + falling fragments
-    let ceilGrid = []; // [row][col] => char
-    let frags = [];    // {x,y,ch,vy,life}
+    // crisp terminal look
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
 
-    function setup() {
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
-      canvas.width  = Math.floor(window.innerWidth * dpr);
-      canvas.height = Math.floor(window.innerHeight * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    W = Math.max(20, Math.floor(window.innerWidth / CELL));
+    H = Math.max(12, Math.floor(window.innerHeight / CELL));
 
-      columns = Math.max(1, Math.floor(window.innerWidth / FONT_SIZE));
-
-      drops  = new Array(columns);
-      speeds = new Array(columns);
-      for (let i=0; i<columns; i++) {
-        drops[i] = Math.random() * (window.innerHeight / FONT_SIZE);
-        speeds[i] = BASE_SPEED + Math.random() * SPEED_JITTER;
-      }
-
-      // Build ceiling layer: dense letters at the top
-      ceilGrid = new Array(CEILING_ROWS);
-      for (let r=0; r<CEILING_ROWS; r++) {
-        ceilGrid[r] = new Array(columns);
-        for (let c=0; c<columns; c++) ceilGrid[r][c] = randChar();
-      }
-
-      frags = [];
-
-      ctx.font = `${FONT_SIZE}px monospace`;
-      ctx.textBaseline = "top";
-
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+    // init rain
+    drops = new Array(W);
+    speed = new Array(W);
+    len   = new Array(W);
+    for (let x = 0; x < W; x++) {
+      drops[x] = (Math.random() * H) | 0;
+      speed[x] = (SPEED_MIN + ((Math.random() * (SPEED_MAX - SPEED_MIN)) | 0));
+      len[x] = Math.max(6, ((Math.random() * (H * 0.65)) | 0));
     }
 
-    function headColor(i, y) {
-      if (Math.random() < SPARKLE_CHANCE) return "#fff";
-      if (Math.random() < RAINBOW_HEAD_CHANCE) {
-        const hue = (hueBase + i*15 + y*0.12) % 360;
-        return `hsl(${hue},95%,65%)`;
-      }
-      return HEAD_MINT;
+    // init ceiling
+    ceiling = new Array(CEILING_ROWS);
+    for (let r = 0; r < CEILING_ROWS; r++) {
+      ceiling[r] = new Array(W);
+      for (let x = 0; x < W; x++) ceiling[r][x] = randChar();
     }
 
-    // Crumble: spawn falling chunks from the ceiling grid
-    function updateCrumble() {
-      // Randomly “break” a few cells each frame
-      for (let c=0; c<columns; c++) {
-        if (Math.random() < CRUMBLE_RATE) {
-          // pick a random row in the ceiling to break
-          const r = (Math.random() * CEILING_ROWS) | 0;
-          const ch = ceilGrid[r][c];
-          // replace that ceiling cell with a new char (ceiling keeps “alive”)
-          ceilGrid[r][c] = randChar();
-          // spawn fragment that falls down
-          frags.push({
-            x: c * FONT_SIZE,
-            y: r * FONT_SIZE,
-            ch,
-            vy: (BASE_SPEED + Math.random()*0.8) * FONT_SIZE * CRUMBLE_FALL_SPEED,
-            life: 1.0
-          });
-        }
-      }
+    frags = [];
+    frame = 0;
 
-      // Update fragments
-      const H = window.innerHeight;
-      for (let i=frags.length-1; i>=0; i--) {
-        const f = frags[i];
-        f.y += f.vy;
-        f.life *= 0.988; // gentle fade
-        if (f.y > H + 50 || f.life < 0.08) frags.splice(i, 1);
-      }
-    }
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
-    function drawCeiling() {
-      // Draw a block of letters at the top that looks like “layers”
-      for (let r=0; r<CEILING_ROWS; r++) {
-        for (let c=0; c<columns; c++) {
-          const x = c * FONT_SIZE;
-          const y = r * FONT_SIZE;
-
-          // Slightly varied color per row for depth
-          // Top rows a touch brighter, lower rows more muted
-          const rowMix = 1 - (r / (CEILING_ROWS + 2));
-          ctx.fillStyle = rowMix > 0.7 ? HEAD_MINT : BODY_GREEN;
-          ctx.fillText(ceilGrid[r][c], x, y);
-        }
-      }
-
-      // Draw falling fragments (these are the “crumble” bits)
-      for (const f of frags) {
-        ctx.globalAlpha = Math.min(1, f.life);
-        ctx.fillStyle = headColor((f.x / FONT_SIZE) | 0, f.y);
-        ctx.fillText(f.ch, f.x, f.y);
-      }
-      ctx.globalAlpha = 1;
-    }
-
-    // Startup word typed in, then dissolves into fragments
-    const t0 = performance.now();
-
-    function drawStartup(elapsed) {
-      const typedCount = Math.min(
-        START_TEXT.length,
-        Math.floor(elapsed / TYPE_MS_PER_CHAR)
-      );
-      const typed = START_TEXT.slice(0, typedCount);
-
-      const typeDoneAt = START_TEXT.length * TYPE_MS_PER_CHAR;
-      const holdEndsAt = typeDoneAt + HOLD_AFTER_TYPE_MS;
-      const dissolveEndsAt = holdEndsAt + DISSOLVE_MS;
-
-      const cx = window.innerWidth / 2;
-      const cy = Math.max(CEILING_ROWS * FONT_SIZE + 70, window.innerHeight * 0.30);
-
-      // draw typed text in “Matrix style”: monospace + glyph shimmer
-      const size = Math.max(34, Math.min(92, Math.floor(window.innerWidth / 10)));
-      ctx.save();
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.font = `900 ${size}px monospace`;
-
-      // Base glow
-      ctx.globalAlpha = 0.35;
-      ctx.fillStyle = BODY_GREEN;
-      ctx.fillText(typed, cx, cy);
-
-      // Bright top stroke
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = "#caffde";
-      ctx.fillText(typed, cx, cy);
-
-      // Dissolve: after hold, spawn fragments from the word area
-      if (elapsed > holdEndsAt && elapsed < dissolveEndsAt) {
-        const t = (elapsed - holdEndsAt) / DISSOLVE_MS; // 0..1
-        const alpha = 1 - t;
-        ctx.globalAlpha = alpha;
-
-        // Spawn extra crumbs from the word to “melt away”
-        // Use a few random columns near the center
-        const wordWidth = ctx.measureText(START_TEXT).width;
-        const left = cx - wordWidth/2;
-        for (let k=0; k<10; k++) {
-          const rx = left + Math.random() * wordWidth;
-          const col = Math.max(0, Math.min(columns-1, Math.floor(rx / FONT_SIZE)));
-          frags.push({
-            x: col * FONT_SIZE,
-            y: cy - size * 0.25 + Math.random() * (size * 0.5),
-            ch: (Math.random() < 0.6) ? START_TEXT[(Math.random()*START_TEXT.length)|0] : randChar(),
-            vy: (BASE_SPEED + Math.random()*1.0) * FONT_SIZE * 1.7,
-            life: 1.0
-          });
-        }
-      }
-
-      ctx.restore();
-
-      return elapsed < dissolveEndsAt;
-    }
-
-    function drawRain() {
-      for (let pass=0; pass<DENSITY_PASSES; pass++) {
-        for (let i=0; i<columns; i++) {
-          const x = i * FONT_SIZE;
-          const y = drops[i] * FONT_SIZE;
-
-          // body
-          ctx.fillStyle = BODY_GREEN;
-          ctx.fillText(randChar(), x, y);
-
-          // head highlight
-          const headY = y - FONT_SIZE*2;
-          if (headY >= 0 && headY < window.innerHeight) {
-            ctx.fillStyle = headColor(i, headY);
-            ctx.fillText(randChar(), x, headY);
-          }
-
-          drops[i] += speeds[i];
-          if (y > window.innerHeight && Math.random() > 0.975) {
-            drops[i] = 0;
-            speeds[i] = BASE_SPEED + Math.random() * SPEED_JITTER;
-          }
-        }
-      }
-    }
-
-    function frame(t) {
-      const elapsed = t - t0;
-      hueBase = (hueBase + 1) % 360;
-
-      // fade
-      ctx.fillStyle = `rgba(0,0,0,${FADE})`;
-      ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
-
-      // Always: crumble ceiling + draw it
-      updateCrumble();
-      drawCeiling();
-
-      // Rain under / around
-      drawRain();
-
-      // Startup word at the start
-      drawStartup(elapsed);
-
-      requestAnimationFrame(frame);
-    }
-
-    window.addEventListener("resize", setup);
-    window.addEventListener("error", (ev) => showErr(ev.error || ev.message));
-
-    setup();
-    requestAnimationFrame(frame);
-
-  } catch (e) {
-    showErr(e);
+    ctx.font = `${CELL}px monospace`;
+    ctx.textBaseline = "top";
   }
+
+  // ===== Startup timing =====
+  const t0 = performance.now();
+  const typeDoneAt = START_TEXT.length * TYPE_MS_PER_CHAR;
+  const holdEndsAt = typeDoneAt + HOLD_AFTER_TYPE_MS;
+  const startupTotal =
+    holdEndsAt + (START_TEXT.length - 1) * FALL_GAP_MS + FALL_DURATION_MS;
+
+  function addFrag(x, y, ch, v, col) {
+    if (frags.length >= FRAG_MAX) return;
+    frags.push({ x, y, ch, v, col, life: 1.0 });
+  }
+
+  function drawCell(x, y, ch, color) {
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    ctx.fillStyle = color;
+    ctx.fillText(ch, x * CELL, y * CELL);
+  }
+
+  function drawTextCentered(text, row, color) {
+    const startX = Math.max(0, ((W - text.length) / 2) | 0);
+    for (let i = 0; i < text.length; i++) {
+      drawCell(startX + i, row, text[i], color);
+    }
+    return startX;
+  }
+
+  // Fixed-timestep loop like PS sleep
+  let last = performance.now();
+  let acc = 0;
+
+  function step(now) {
+    acc += (now - last);
+    last = now;
+
+    while (acc >= FPS_MS) {
+      tick(now - t0);
+      acc -= FPS_MS;
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  function tick(elapsedMs) {
+    // Background fade (optional)
+    if (TRAIL_ALPHA <= 0) {
+      // no trails: hard clear each frame for true terminal feel
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    } else {
+      ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+
+    // 1) Crumble ceiling: pick random cells to fall as fragments
+    for (let x = 0; x < W; x++) {
+      if (Math.random() < CRUMBLE_RATE) {
+        const r = (Math.random() * CEILING_ROWS) | 0;
+        const ch = ceiling[r][x];
+        ceiling[r][x] = randChar();
+        addFrag(x, r, ch, 0.6 + Math.random() * 1.2, headColor());
+      }
+    }
+
+    // Draw ceiling rows (solid, layered)
+    for (let r = 0; r < CEILING_ROWS; r++) {
+      const col = (r <= 1) ? "#ffffff" : (r <= 3) ? BODY_GREEN : BODY_DARK;
+      for (let x = 0; x < W; x++) {
+        drawCell(x, r, ceiling[r][x], col);
+      }
+    }
+
+    // 2) Update + draw fragments
+    for (let i = frags.length - 1; i >= 0; i--) {
+      const f = frags[i];
+      f.y += f.v;
+      f.life *= 0.985;
+
+      // draw
+      drawCell(f.x, f.y | 0, f.ch, f.col);
+
+      if (f.y > H + 2 || f.life < 0.08) frags.splice(i, 1);
+    }
+
+    // 3) Rain (dense)
+    for (let pass = 0; pass < RAIN_PASSES; pass++) {
+      for (let x = 0; x < W; x++) {
+        if ((frame % speed[x]) !== 0) continue;
+
+        const yHead = drops[x];
+        const yBody = yHead - 2;
+
+        if (yBody >= CEILING_ROWS) {
+          drawCell(x, yBody, randChar(), BODY_DARK);
+        }
+        if (yHead >= CEILING_ROWS) {
+          drawCell(x, yHead, randChar(), headColor());
+          if (Math.random() < 0.08) drawCell(x, yHead, randChar(), "#ffffff"); // sparkle
+        }
+
+        drops[x]++;
+
+        if (drops[x] > H + len[x] && Math.random() < 0.08) {
+          drops[x] = CEILING_ROWS;
+          speed[x] = SPEED_MIN + ((Math.random() * (SPEED_MAX - SPEED_MIN)) | 0);
+          len[x] = Math.max(6, ((Math.random() * (H * 0.70)) | 0));
+        }
+      }
+    }
+
+    // 4) Startup: type + fallaway one letter at a time (spawning fragments)
+    if (elapsedMs < startupTotal) {
+      const wordRow = Math.min(H - 2, CEILING_ROWS + 2);
+
+      // typing
+      const typedCount = Math.min(START_TEXT.length, (elapsedMs / TYPE_MS_PER_CHAR) | 0);
+      const typed = START_TEXT.slice(0, typedCount);
+      const baseX = drawTextCentered(typed, wordRow, BODY_GREEN);
+
+      // after hold: letters fall away sequentially (and spawn fragments)
+      if (elapsedMs > holdEndsAt) {
+        for (let i = 0; i < START_TEXT.length; i++) {
+          const letterStart = holdEndsAt + i * FALL_GAP_MS;
+          const t = (elapsedMs - letterStart) / FALL_DURATION_MS;
+
+          if (t >= 0 && t <= 1) {
+            const x = baseX + i;
+            // spawn falling chunk
+            const useLetter = (Math.random() < 0.55);
+            const ch = useLetter ? START_TEXT[i] : randChar();
+            addFrag(x, wordRow, ch, 0.9 + Math.random() * 1.7, useLetter ? "#ffffff" : headColor());
+
+            // also seed rain under it so it “melts” into the streams
+            if (x >= 0 && x < W) {
+              drops[x] = Math.min(drops[x], wordRow + 1);
+              speed[x] = Math.min(speed[x], 4);
+            }
+          }
+        }
+      }
+    }
+
+    frame++;
+  }
+
+  window.addEventListener("resize", resize);
+  resize();
+  requestAnimationFrame(step);
 })();
 </script>
 </body>

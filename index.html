@@ -3,18 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Matrix Rain</title>
+  <title>Matrix Rain — TREVSHADOW</title>
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     canvas { display:block; width:100vw; height:100vh; }
-    /* If something breaks, show it readable */
-    #err {
-      position: fixed; inset: 0;
-      padding: 16px;
-      font: 14px/1.4 monospace;
-      color: #fff; background: #000;
-      white-space: pre-wrap;
-      display: none;
+    #err{
+      position:fixed; inset:0; padding:16px;
+      font:14px/1.4 monospace; color:#fff; background:#000;
+      white-space:pre-wrap; display:none;
     }
   </style>
 </head>
@@ -25,103 +21,216 @@
 <script>
 (() => {
   const errBox = document.getElementById("err");
-  function showErr(e) {
+  const showErr = (e) => {
     errBox.style.display = "block";
     errBox.textContent = "Matrix crashed:\n\n" + (e && e.stack ? e.stack : String(e));
-  }
+  };
 
   try {
     const canvas = document.getElementById("c");
     const ctx = canvas.getContext("2d", { alpha: false });
 
-    // ===== DIALS =====
-    const FONT_SIZE = 16;            // smaller = more letters
-    const FADE = 0.09;               // lower = longer trails
-    const BASE_SPEED = 0.22;          // lower = slower fall
-    const RAINBOW_HEAD_CHANCE = 0.60; // more rainbow (heads only)
+    // ====== DIALS ======
+    const FONT_SIZE = 14;            // smaller = more letters everywhere
+    const FADE = 0.07;               // lower = longer trails (more “wall”)
+    const BASE_SPEED = 0.16;         // lower = slower overall fall
+    const SPEED_JITTER = 0.22;       // variation per column
+
+    const RAINBOW_HEAD_CHANCE = 0.70; // more visible rainbow (heads only)
     const SPARKLE_CHANCE = 0.05;      // occasional white pop
+
+    const DENSITY_PASSES = 2;         // draw 2 chars per column per frame = denser wall
+
+    const START_TEXT = "TREVSHADOW";
+    const START_HOLD_MS = 700;        // show the word cleanly
+    const START_MELT_MS = 2200;       // then melt/drip duration
+    const START_TOTAL_MS = START_HOLD_MS + START_MELT_MS;
+
+    const BODY_GREEN = "#00ff66";
+    const HEAD_MINT = "#7CFFB6";
 
     const CHARS =
       "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
       "ハヒフヘホマミムメモヤユヨラリルレロワ" +
       "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
+    let columns = 0;
     let drops = [];
     let speeds = [];
-    let columns = 0;
+    let hotCols = [];       // columns “infected” by the startup text for extra drip
     let hueBase = 0;
+
+    // Offscreen canvas for startup text mask
+    const mask = document.createElement("canvas");
+    const mctx = mask.getContext("2d");
 
     function setup() {
       const dpr = Math.max(1, window.devicePixelRatio || 1);
-      canvas.width = Math.floor(window.innerWidth * dpr);
+
+      canvas.width  = Math.floor(window.innerWidth * dpr);
       canvas.height = Math.floor(window.innerHeight * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       columns = Math.max(1, Math.floor(window.innerWidth / FONT_SIZE));
-      drops = new Array(columns);
-      speeds = new Array(columns);
+      drops   = new Array(columns);
+      speeds  = new Array(columns);
+      hotCols = new Array(columns).fill(0);
 
       for (let i = 0; i < columns; i++) {
         drops[i] = Math.random() * (window.innerHeight / FONT_SIZE);
-        speeds[i] = BASE_SPEED + Math.random() * 0.25;
+        speeds[i] = BASE_SPEED + Math.random() * SPEED_JITTER;
       }
 
       ctx.font = `${FONT_SIZE}px monospace`;
       ctx.textBaseline = "top";
+
+      // Prepare mask in CSS pixels
+      mask.width = window.innerWidth;
+      mask.height = window.innerHeight;
+      mctx.clearRect(0, 0, mask.width, mask.height);
+
+      // big startup word
+      const size = Math.max(36, Math.min(110, Math.floor(window.innerWidth / 9)));
+      mctx.font = `900 ${size}px monospace`;
+      mctx.textAlign = "center";
+      mctx.textBaseline = "middle";
+      mctx.fillStyle = "#ffffff";
+      mctx.fillText(START_TEXT, mask.width / 2, mask.height / 2);
+
+      // Clear screen
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
     }
 
-    function frame() {
+    function randChar() {
+      return CHARS[(Math.random() * CHARS.length) | 0];
+    }
+
+    function headColor(i, y) {
+      if (Math.random() < SPARKLE_CHANCE) return "#ffffff";
+      if (Math.random() < RAINBOW_HEAD_CHANCE) {
+        const hue = (hueBase + i * 15 + y * 0.12) % 360;
+        return `hsl(${hue}, 95%, 65%)`;
+      }
+      return HEAD_MINT;
+    }
+
+    // Find which columns overlap the startup text, and “seed” drops there
+    function seedFromText() {
+      const img = mctx.getImageData(0, 0, mask.width, mask.height).data;
+
+      // sample each Matrix column at its x position in pixels
+      for (let i = 0; i < columns; i++) {
+        const x = Math.floor(i * FONT_SIZE + FONT_SIZE / 2);
+        if (x < 0 || x >= mask.width) continue;
+
+        // scan vertically for any white pixel (text)
+        let hitY = -1;
+        for (let y = 0; y < mask.height; y += 2) {
+          const idx = (y * mask.width + x) * 4;
+          if (img[idx] > 10) { // red channel since it's white text
+            hitY = y;
+            break;
+          }
+        }
+
+        if (hitY !== -1) {
+          // Seed this column near the text area
+          drops[i] = (hitY / FONT_SIZE) + (Math.random() * 6 - 3);
+          hotCols[i] = 1.0; // mark as “hot” for melt phase
+          speeds[i] = (BASE_SPEED + 0.10) + Math.random() * (SPEED_JITTER + 0.18);
+        }
+      }
+    }
+
+    const t0 = performance.now();
+    let didSeed = false;
+
+    function frame(t) {
+      const elapsed = t - t0;
       hueBase = (hueBase + 1) % 360;
 
+      // fade layer
       ctx.fillStyle = `rgba(0,0,0,${FADE})`;
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
-      for (let i = 0; i < columns; i++) {
-        const x = i * FONT_SIZE;
-        const y = drops[i] * FONT_SIZE;
+      // Startup phases
+      const inHold = elapsed < START_HOLD_MS;
+      const inMelt = elapsed >= START_HOLD_MS && elapsed < START_TOTAL_MS;
 
-        // body = classic green
-        const bodyChar = CHARS[(Math.random() * CHARS.length) | 0];
+      if (!didSeed && elapsed > 120) {
+        seedFromText();
+        didSeed = true;
+      }
+
+      // During HOLD: keep the word readable by re-drawing it lightly on top
+      if (inHold) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const size = Math.max(36, Math.min(110, Math.floor(window.innerWidth / 9)));
+        ctx.font = `900 ${size}px monospace`;
         ctx.fillStyle = "#00ff66";
-        ctx.fillText(bodyChar, x, y);
+        ctx.globalAlpha = 0.25;
+        ctx.fillText(START_TEXT, window.innerWidth / 2, window.innerHeight / 2);
+        ctx.restore();
+      }
 
-        // head highlight (rainbow sometimes)
-        const headY = y - FONT_SIZE * 2;
-        if (headY >= 0 && headY < window.innerHeight) {
-          const headChar = CHARS[(Math.random() * CHARS.length) | 0];
-
-          if (Math.random() < RAINBOW_HEAD_CHANCE) {
-            const hue = (hueBase + i * 14) % 360;
-            ctx.fillStyle = `hsl(${hue}, 95%, 65%)`;
-          } else {
-            ctx.fillStyle = "#7CFFB6"; // bright mint-green
+      // draw rain (denser wall)
+      for (let pass = 0; pass < DENSITY_PASSES; pass++) {
+        for (let i = 0; i < columns; i++) {
+          // extra drip behavior during melt: hot columns fall faster and spawn more
+          let boost = 1.0;
+          if (inMelt && hotCols[i] > 0) {
+            const meltT = (elapsed - START_HOLD_MS) / START_MELT_MS; // 0..1
+            boost = 1.0 + (1.8 * (1 - Math.pow(1 - meltT, 2)));      // ramps up
+            // cool down over time after melt ends
+            hotCols[i] = Math.max(0, hotCols[i] - 0.008);
+          } else if (!inMelt && hotCols[i] > 0) {
+            hotCols[i] = Math.max(0, hotCols[i] - 0.004);
           }
 
-          if (Math.random() < SPARKLE_CHANCE) ctx.fillStyle = "#ffffff";
-          ctx.fillText(headChar, x, headY);
-        }
+          const x = i * FONT_SIZE;
+          const y = drops[i] * FONT_SIZE;
 
-        drops[i] += speeds[i];
+          // body
+          ctx.fillStyle = BODY_GREEN;
+          ctx.fillText(randChar(), x, y);
 
-        if (y > window.innerHeight && Math.random() > 0.975) {
-          drops[i] = 0;
-          speeds[i] = BASE_SPEED + Math.random() * 0.25;
+          // head highlight a bit above to create “drip head”
+          const headY = y - FONT_SIZE * 2;
+          if (headY >= 0 && headY < window.innerHeight) {
+            ctx.fillStyle = headColor(i, headY);
+            ctx.fillText(randChar(), x, headY);
+          }
+
+          // advance
+          drops[i] += speeds[i] * boost;
+
+          // reset
+          if (y > window.innerHeight && Math.random() > 0.975) {
+            drops[i] = 0;
+            speeds[i] = BASE_SPEED + Math.random() * SPEED_JITTER;
+          }
         }
       }
 
       requestAnimationFrame(frame);
     }
 
-    window.addEventListener("resize", setup);
+    window.addEventListener("resize", () => {
+      didSeed = false;
+      setup();
+    });
+
+    window.addEventListener("error", (ev) => showErr(ev.error || ev.message));
+
     setup();
-    frame();
+    requestAnimationFrame(frame);
+
   } catch (e) {
     showErr(e);
   }
-
-  window.addEventListener("error", (ev) => showErr(ev.error || ev.message));
 })();
 </script>
 </body>

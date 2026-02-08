@@ -1,22 +1,22 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Matrix Rain</title>
-  <style>
-    html, body {
-      margin: 0;
-      height: 100%;
-      background: #000;
-      overflow: hidden;
-    }
-    canvas {
-      display: block;
-      width: 100vw;
-      height: 100vh;
-    }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Matrix Rain</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+</style>
 </head>
 <body>
 <canvas id="c"></canvas>
@@ -25,19 +25,20 @@
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
 
-// ===== CLEAR, STRONG CONTROLS =====
-const FONT_SIZE = 20;     // bigger = calmer
-const FADE = 0.14;        // higher = shorter trails
-const SPEED_MS = 70;      // higher = SLOWER (this is the big one)
-const RAINBOW_STRENGTH = 0.35; // 0 = all green, 1 = full rainbow
+// ===== FINAL DIAL CONTROLS =====
+const FONT_SIZE = 18;          // smaller = denser letters
+const FADE = 0.10;             // lower = longer trails
+const BASE_SPEED = 0.35;       // lower = SLOWER fall
+const RAINBOW_STRENGTH = 0.25; // subtle color, not rave
 
 const CHARS =
   "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
+  "ハヒフヘホマミムメモヤユヨラリルレロワ" +
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 let drops = [];
+let speeds = [];
 let columns = 0;
-let lastTime = 0;
 
 function setup() {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -46,7 +47,13 @@ function setup() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   columns = Math.floor(window.innerWidth / FONT_SIZE);
-  drops = new Array(columns).fill(0);
+  drops = [];
+  speeds = [];
+
+  for (let i = 0; i < columns; i++) {
+    drops[i] = Math.random() * window.innerHeight / FONT_SIZE;
+    speeds[i] = BASE_SPEED + Math.random() * 0.35; // per-column drift
+  }
 
   ctx.font = `${FONT_SIZE}px monospace`;
   ctx.textBaseline = "top";
@@ -55,21 +62,6 @@ function setup() {
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 }
 
-function colorFor(x, y) {
-  // Smooth rainbow wave, blended back toward green
-  const hue = (y * 2 + x * 0.8) % 360;
-  const green = [0, 255, 100];
-  const rainbow = hslToRgb(hue / 360, 0.7, 0.6);
-
-  const mix = RAINBOW_STRENGTH;
-  const r = Math.round(green[0] * (1 - mix) + rainbow[0] * mix);
-  const g = Math.round(green[1] * (1 - mix) + rainbow[1] * mix);
-  const b = Math.round(green[2] * (1 - mix) + rainbow[2] * mix);
-
-  return `rgb(${r},${g},${b})`;
-}
-
-// HSL → RGB helper
 function hslToRgb(h, s, l) {
   let r, g, b;
   if (s === 0) {
@@ -92,28 +84,38 @@ function hslToRgb(h, s, l) {
   return [r * 255, g * 255, b * 255];
 }
 
-function frame(time) {
-  if (time - lastTime < SPEED_MS) {
-    requestAnimationFrame(frame);
-    return;
-  }
-  lastTime = time;
+function colorFor(x, y) {
+  const hue = (y * 1.5 + x * 0.5) % 360;
+  const baseGreen = [0, 255, 120];
+  const rainbow = hslToRgb(hue / 360, 0.7, 0.6);
 
+  const mix = RAINBOW_STRENGTH;
+  const r = baseGreen[0] * (1 - mix) + rainbow[0] * mix;
+  const g = baseGreen[1] * (1 - mix) + rainbow[1] * mix;
+  const b = baseGreen[2] * (1 - mix) + rainbow[2] * mix;
+
+  return `rgb(${r|0},${g|0},${b|0})`;
+}
+
+function frame() {
   ctx.fillStyle = `rgba(0,0,0,${FADE})`;
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
-  for (let i = 0; i < drops.length; i++) {
-    const ch = CHARS[(Math.random() * CHARS.length) | 0];
+  for (let i = 0; i < columns; i++) {
     const x = i * FONT_SIZE;
     const y = drops[i] * FONT_SIZE;
 
+    const ch = CHARS[(Math.random() * CHARS.length) | 0];
     ctx.fillStyle = colorFor(x, y);
     ctx.fillText(ch, x, y);
 
+    drops[i] += speeds[i];
+
+    // reset naturally
     if (y > window.innerHeight && Math.random() > 0.97) {
       drops[i] = 0;
+      speeds[i] = BASE_SPEED + Math.random() * 0.35;
     }
-    drops[i]++;
   }
 
   requestAnimationFrame(frame);
@@ -121,7 +123,7 @@ function frame(time) {
 
 window.addEventListener("resize", setup);
 setup();
-requestAnimationFrame(frame);
+frame();
 </script>
 </body>
 </html>

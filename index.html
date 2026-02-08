@@ -10,7 +10,6 @@
       height: 100%;
       background: #000;
       overflow: hidden;
-      touch-action: none;
     }
     canvas {
       display: block;
@@ -20,70 +19,81 @@
   </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
+<canvas id="c"></canvas>
 
-  <script>
-    const canvas = document.getElementById("c");
-    const ctx = canvas.getContext("2d", { alpha: false });
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
 
-    // Tune these for vibe
-    const FONT_SIZE = 16;        // bigger = chunkier
-    const FADE = 0.08;           // lower = longer trails, higher = shorter
-    const GREEN = "#00ff66";
+// --- VIBE CONTROLS ---
+const FONT_SIZE = 18;      // bigger = calmer
+const FADE = 0.12;         // higher = shorter trails
+const SPEED = 0.65;        // < 1 = slower
+const RAINBOW_CHANCE = 0.08; // how often color drifts (subtle)
 
-    const CHARS =
-      "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
-      "ハヒフヘホマミムメモヤユヨラリルレロワ" +
-      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+// Characters
+const CHARS =
+  "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-    let drops = [];
-    let columns = 0;
+let drops = [];
+let columns = 0;
+let tick = 0;
 
-    function setup() {
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
+function setup() {
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      canvas.width = Math.floor(window.innerWidth * dpr);
-      canvas.height = Math.floor(window.innerHeight * dpr);
+  columns = Math.floor(window.innerWidth / FONT_SIZE);
+  drops = new Array(columns).fill(1);
 
-      // Draw in CSS pixels while keeping crispness on high-DPI screens
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.font = `${FONT_SIZE}px monospace`;
+  ctx.textBaseline = "top";
 
-      columns = Math.floor(window.innerWidth / FONT_SIZE);
-      drops = new Array(columns).fill(1);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+}
 
-      ctx.font = `${FONT_SIZE}px monospace`;
-      ctx.textBaseline = "top";
+function matrixColor(x, y) {
+  // mostly green, slight rainbow shimmer
+  if (Math.random() < RAINBOW_CHANCE) {
+    const hue = (tick * 2 + x * 4 + y) % 360;
+    return `hsl(${hue}, 70%, 60%)`;
+  }
+  return "#00ff66";
+}
 
-      // Clear once
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+function frame() {
+  tick++;
+
+  ctx.fillStyle = `rgba(0,0,0,${FADE})`;
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+  for (let i = 0; i < drops.length; i++) {
+    // slow the animation by skipping frames
+    if (Math.random() > SPEED) continue;
+
+    const ch = CHARS[(Math.random() * CHARS.length) | 0];
+    const x = i * FONT_SIZE;
+    const y = drops[i] * FONT_SIZE;
+
+    ctx.fillStyle = matrixColor(x, y);
+    ctx.fillText(ch, x, y);
+
+    if (y > window.innerHeight && Math.random() > 0.985) {
+      drops[i] = 0;
     }
+    drops[i]++;
+  }
 
-    function frame() {
-      // Fade the screen slightly to create trails
-      ctx.fillStyle = `rgba(0,0,0,${FADE})`;
-      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  requestAnimationFrame(frame);
+}
 
-      ctx.fillStyle = GREEN;
-
-      for (let i = 0; i < drops.length; i++) {
-        const ch = CHARS[(Math.random() * CHARS.length) | 0];
-        const x = i * FONT_SIZE;
-        const y = drops[i] * FONT_SIZE;
-
-        ctx.fillText(ch, x, y);
-
-        // Reset after it passes bottom, randomly
-        if (y > window.innerHeight && Math.random() > 0.975) drops[i] = 0;
-        drops[i]++;
-      }
-
-      requestAnimationFrame(frame);
-    }
-
-    window.addEventListener("resize", setup);
-    setup();
-    frame();
-  </script>
+window.addEventListener("resize", setup);
+setup();
+frame();
+</script>
 </body>
 </html>

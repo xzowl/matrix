@@ -7,279 +7,295 @@
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     canvas { display:block; width:100vw; height:100vh; }
+    #err{
+      position:fixed; inset:0; padding:14px;
+      font:14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color:#fff; background:#000; display:none; white-space:pre-wrap;
+    }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="err"></div>
 
 <script>
 (() => {
-  const canvas = document.getElementById("c");
-  const ctx = canvas.getContext("2d", { alpha: false });
+  const errBox = document.getElementById("err");
+  const showErr = (e) => {
+    errBox.style.display = "block";
+    errBox.textContent = "Matrix crashed:\n\n" + (e && e.stack ? e.stack : String(e));
+  };
+  window.addEventListener("error", (ev) => showErr(ev.error || ev.message));
+  window.addEventListener("unhandledrejection", (ev) => showErr(ev.reason || ev));
 
-  // ===== "POWERSHELL LOOK" DIALS =====
-  const CELL = 16;              // grid cell size
-  const FPS_MS = 77;            // higher = slower
+  try {
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d", { alpha: false });
 
-  // Top "layer" of letters (always present)
-  const CEILING_ROWS = 2.5;
-  const TRANSITION_ROWS = 7;    // <— NEW: blend zone thickness (kills the straight seam)
-  const CRUMBLE_RATE = 0.020;
-  const FRAG_MAX = 1700;
+    // ===== "POWERSHELL LOOK" DIALS =====
+    const CELL = 16;
+    const FPS_MS = 77;            // slower like you set
 
-  // Rain behavior (continuous)
-  const RAIN_PASSES = 3;
-  const SPEED_MIN = 0.5;
-  const SPEED_MAX = 2;
-  const TRAIL_ALPHA = 0.05;     // trails without freezing
+    // Top "layer" of letters (always present)
+    const CEILING_ROWS = 3;       // ✅ FIX: must be integer (was 2.5)
+    const TRANSITION_ROWS = 7;
+    const CRUMBLE_RATE = 0.020;
+    const FRAG_MAX = 1700;
 
-  // Tall, continuous columns
-  const TAIL_MIN = 18;
-  const TAIL_MAX_FRAC = 0.98;
+    // Rain behavior (continuous)
+    const RAIN_PASSES = 3;
 
-  // Living tail (keeps changing)
-  const TAIL_LIVE_CELLS = 26;
-  const TAIL_SPREAD_STEP = 1;   // 1 best look
+    // ✅ FIX: must produce integers >= 1 (no 0.5 / no 0)
+    const SPEED_MIN = 1;
+    const SPEED_MAX = 3;
 
-  // Startup word (plays ONCE, then never again)
-  const START_TEXT = "TREVSHADOW";
-  const TYPE_MS_PER_CHAR = 90;
-  const HOLD_AFTER_TYPE_MS = 650;
-  const FALL_GAP_MS = 140;
-  const FALL_DURATION_MS = 1100;
+    const TRAIL_ALPHA = 0.05;
 
-  // Colors
-  const BODY_DARK  = "#0b6b2a";
-  const BODY_MID   = "#00b84a";
-  const BODY_GREEN = "#00ff66";
-  const HEAD_COLORS = ["#00ff66", "#00ffd5", "#ff4dff", "#ffe14d", "#ffffff"];
+    // Tall, continuous columns
+    const TAIL_MIN = 18;
+    const TAIL_MAX_FRAC = 0.98;
 
-  const CHARS = (
-    "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ" +
-    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
-    "!@#$%^&*()_+-=[]{};:,.<>/?"
-  );
+    // Living tail (keeps changing)
+    const TAIL_LIVE_CELLS = 26;
+    const TAIL_SPREAD_STEP = 1;   // if phone struggles, set to 2
 
-  const randChar = () => CHARS[(Math.random() * CHARS.length) | 0];
-  const headColor = () => (Math.random() < 0.70 ? HEAD_COLORS[0] : HEAD_COLORS[(Math.random() * HEAD_COLORS.length) | 0]);
+    // Startup word (plays ONCE, then never again)
+    const START_TEXT = "TREVSHADOW";
+    const TYPE_MS_PER_CHAR = 90;
+    const HOLD_AFTER_TYPE_MS = 650;
+    const FALL_GAP_MS = 140;
+    const FALL_DURATION_MS = 1100;
 
-  // Grid size in cells
-  let W = 0, H = 0;
-  let drops = [];
-  let speed = [];
-  let len = [];
-  let ceiling = [];
-  let frags = [];
-  let frame = 0;
+    // Colors
+    const BODY_DARK  = "#0b6b2a";
+    const BODY_MID   = "#00b84a";
+    const BODY_GREEN = "#00ff66";
+    const HEAD_COLORS = ["#00ff66", "#00ffd5", "#ff4dff", "#ffe14d", "#ffffff"];
 
-  // Startup timing (once)
-  const t0 = performance.now();
-  const typeDoneAt = START_TEXT.length * TYPE_MS_PER_CHAR;
-  const holdEndsAt = typeDoneAt + HOLD_AFTER_TYPE_MS;
-  const startupTotal =
-    holdEndsAt + (START_TEXT.length - 1) * FALL_GAP_MS + FALL_DURATION_MS;
-  let startupDone = false;
+    const CHARS = (
+      "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ" +
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+      "!@#$%^&*()_+-=[]{};:,.<>/?"
+    );
 
-  function resize() {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = false;
+    const randChar = () => CHARS[(Math.random() * CHARS.length) | 0];
+    const headColor = () => (Math.random() < 0.70 ? HEAD_COLORS[0] : HEAD_COLORS[(Math.random() * HEAD_COLORS.length) | 0]);
 
-    W = Math.max(20, Math.floor(window.innerWidth / CELL));
-    H = Math.max(12, Math.floor(window.innerHeight / CELL));
+    // Grid size in cells
+    let W = 0, H = 0;
+    let drops = [];
+    let speed = [];
+    let len = [];
+    let ceiling = [];
+    let frags = [];
+    let frame = 0;
 
-    drops = new Array(W);
-    speed = new Array(W);
-    len   = new Array(W);
+    // Startup timing (once)
+    const t0 = performance.now();
+    const typeDoneAt = START_TEXT.length * TYPE_MS_PER_CHAR;
+    const holdEndsAt = typeDoneAt + HOLD_AFTER_TYPE_MS;
+    const startupTotal =
+      holdEndsAt + (START_TEXT.length - 1) * FALL_GAP_MS + FALL_DURATION_MS;
+    let startupDone = false;
 
-    for (let x = 0; x < W; x++) {
-      drops[x] = (Math.random() * H) | 0;
-      speed[x] = SPEED_MIN + ((Math.random() * (SPEED_MAX - SPEED_MIN + 1)) | 0);
-      len[x]   = Math.max(TAIL_MIN, ((Math.random() * (H * TAIL_MAX_FRAC)) | 0));
-    }
+    function resize() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = false;
 
-    ceiling = new Array(CEILING_ROWS);
-    for (let r = 0; r < CEILING_ROWS; r++) {
-      ceiling[r] = new Array(W);
-      for (let x = 0; x < W; x++) ceiling[r][x] = randChar();
-    }
+      W = Math.max(20, Math.floor(window.innerWidth / CELL));
+      H = Math.max(12, Math.floor(window.innerHeight / CELL));
 
-    frags = [];
-    frame = 0;
+      drops = new Array(W);
+      speed = new Array(W);
+      len   = new Array(W);
 
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-    ctx.font = `${CELL}px monospace`;
-    ctx.textBaseline = "top";
-  }
-
-  function addFrag(x, y, ch, v, col) {
-    if (frags.length >= FRAG_MAX) return;
-    frags.push({ x, y, ch, v, col, life: 1.0 });
-  }
-
-  function drawCell(x, y, ch, color, alpha = 1) {
-    if (x < 0 || x >= W || y < 0 || y >= H) return;
-    if (alpha <= 0) return;
-    const prev = ctx.globalAlpha;
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = color;
-    ctx.fillText(ch, x * CELL, y * CELL);
-    ctx.globalAlpha = prev;
-  }
-
-  function drawTextCentered(text, row, color) {
-    const startX = Math.max(0, ((W - text.length) / 2) | 0);
-    for (let i = 0; i < text.length; i++) {
-      drawCell(startX + i, row, text[i], color, 1);
-    }
-    return startX;
-  }
-
-  // fixed timestep loop
-  let last = performance.now();
-  let acc = 0;
-
-  function loop(now) {
-    acc += (now - last);
-    last = now;
-    while (acc >= FPS_MS) {
-      tick(now - t0);
-      acc -= FPS_MS;
-    }
-    requestAnimationFrame(loop);
-  }
-
-  function ceilingAlphaForRow(r) {
-    // Fade ceiling rows near bottom to blend (kills the straight horizontal edge)
-    const startFade = Math.max(0, CEILING_ROWS - TRANSITION_ROWS);
-    if (r < startFade) return 1;
-    const t = (CEILING_ROWS - r) / Math.max(1, TRANSITION_ROWS); // bottom row ~ small
-    return Math.max(0.10, Math.min(1, t)); // never fully disappears
-  }
-
-  function rainAlphaForY(y) {
-    // Fade rain in as it enters the ceiling region (top blend)
-    if (y >= CEILING_ROWS) return 1;
-    const t = (y + 1) / Math.max(1, TRANSITION_ROWS); // 0..~1 in top blend band
-    return Math.max(0.0, Math.min(0.85, t)); // rain is faint up in the ceiling
-  }
-
-  function tick(elapsedMs) {
-    // fade
-    ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
-    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-
-    // 1) ceiling crumble (forever)
-    for (let x = 0; x < W; x++) {
-      if (Math.random() < CRUMBLE_RATE) {
-        const r = (Math.random() * CEILING_ROWS) | 0;
-        const ch = ceiling[r][x];
-        ceiling[r][x] = randChar();
-        addFrag(x, r, ch, 0.6 + Math.random() * 1.2, headColor());
-      }
-    }
-
-    // draw ceiling with fade-out near the bottom edge (blend!)
-    for (let r = 0; r < CEILING_ROWS; r++) {
-      const a = ceilingAlphaForRow(r);
-      const col = (r <= 1) ? "#ffffff" : (r <= 3) ? BODY_GREEN : BODY_DARK;
-      for (let x = 0; x < W; x++) drawCell(x, r, ceiling[r][x], col, a);
-    }
-
-    // 2) fragments (forever)
-    for (let i = frags.length - 1; i >= 0; i--) {
-      const f = frags[i];
-      f.y += f.v;
-      f.life *= 0.985;
-
-      // fragments also fade if they’re in the ceiling region
-      const yy = (f.y | 0);
-      const a = Math.min(1, f.life) * (yy < CEILING_ROWS ? 0.75 : 1);
-      drawCell(f.x, yy, f.ch, f.col, a);
-
-      if (f.y > H + 2 || f.life < 0.08) frags.splice(i, 1);
-    }
-
-    // 3) continuous rain: WRAP (never-ending, no reset pause)
-    for (let pass = 0; pass < RAIN_PASSES; pass++) {
       for (let x = 0; x < W; x++) {
-        if ((frame % speed[x]) !== 0) continue;
+        drops[x] = (Math.random() * H) | 0;
 
-        const yHead = drops[x];
+        // ✅ FIX: integer in [SPEED_MIN..SPEED_MAX], never 0
+        speed[x] = SPEED_MIN + ((Math.random() * (SPEED_MAX - SPEED_MIN + 1)) | 0);
 
-        // living tail (no hard cutoff at CEILING_ROWS anymore — blend instead)
-        const tailDraw = Math.min(len[x], TAIL_LIVE_CELLS);
-        for (let t = 0; t < tailDraw; t += TAIL_SPREAD_STEP) {
-          const yy = yHead - t;
-          if (yy < 0 || yy >= H) continue;
-
-          let col = BODY_DARK;
-          if (t === 0) col = headColor();
-          else if (t <= 2) col = BODY_GREEN;
-          else if (t <= 7) col = BODY_MID;
-
-          // fade rain in ceiling region so it blends with ceiling instead of cutting
-          const a = rainAlphaForY(yy);
-          drawCell(x, yy, randChar(), col, a);
-        }
-
-        // sparkle at head (also blended if head is in the ceiling)
-        if (yHead >= 0 && yHead < H && Math.random() < 0.08) {
-          drawCell(x, yHead, randChar(), "#ffffff", rainAlphaForY(yHead));
-        }
-
-        drops[x]++;
-
-        // WRAP: no "respawn line", just endless cycling
-        if (drops[x] > H + len[x]) {
-          drops[x] = 0; // wrap all the way to top now that we blend
-        }
+        len[x]   = Math.max(TAIL_MIN, ((Math.random() * (H * TAIL_MAX_FRAC)) | 0));
       }
+
+      ceiling = new Array(CEILING_ROWS);
+      for (let r = 0; r < CEILING_ROWS; r++) {
+        ceiling[r] = new Array(W);
+        for (let x = 0; x < W; x++) ceiling[r][x] = randChar();
+      }
+
+      frags = [];
+      frame = 0;
+
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+      ctx.font = `${CELL}px monospace`;
+      ctx.textBaseline = "top";
     }
 
-    // 4) Startup plays once, then stops
-    if (!startupDone) {
-      if (elapsedMs < startupTotal) {
-        const wordRow = Math.min(H - 2, CEILING_ROWS + 2);
+    function addFrag(x, y, ch, v, col) {
+      if (frags.length >= FRAG_MAX) return;
+      frags.push({ x, y, ch, v, col, life: 1.0 });
+    }
 
-        const typedCount = Math.min(START_TEXT.length, (elapsedMs / TYPE_MS_PER_CHAR) | 0);
-        const typed = START_TEXT.slice(0, typedCount);
-        const baseX = drawTextCentered(typed, wordRow, BODY_GREEN);
+    function drawCell(x, y, ch, color, alpha = 1) {
+      if (x < 0 || x >= W || y < 0 || y >= H) return;
+      if (alpha <= 0) return;
+      const prev = ctx.globalAlpha;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.fillText(ch, x * CELL, y * CELL);
+      ctx.globalAlpha = prev;
+    }
 
-        if (elapsedMs > holdEndsAt) {
-          for (let i = 0; i < START_TEXT.length; i++) {
-            const letterStart = holdEndsAt + i * FALL_GAP_MS;
-            const t = (elapsedMs - letterStart) / FALL_DURATION_MS;
+    function drawTextCentered(text, row, color) {
+      const startX = Math.max(0, ((W - text.length) / 2) | 0);
+      for (let i = 0; i < text.length; i++) {
+        drawCell(startX + i, row, text[i], color, 1);
+      }
+      return startX;
+    }
 
-            if (t >= 0 && t <= 1) {
-              const x = baseX + i;
-              const useLetter = (Math.random() < 0.60);
-              const ch = useLetter ? START_TEXT[i] : randChar();
-              addFrag(x, wordRow, ch, 0.9 + Math.random() * 1.7, useLetter ? "#ffffff" : headColor());
+    // ✅ FIX: safe fixed-step loop (prevents mobile “spiral of death”)
+    let last = performance.now();
+    let acc = 0;
+    const MAX_TICKS_PER_FRAME = 6;
 
-              // melt into streams
-              if (x >= 0 && x < W) {
-                drops[x] = Math.min(drops[x], wordRow + 1);
-                speed[x] = Math.min(speed[x], 3);
-                len[x] = Math.max(len[x], Math.floor(H * 0.75));
+    function loop(now) {
+      const dt = now - last;
+      last = now;
+
+      acc += Math.min(dt, 200);
+
+      let ticks = 0;
+      while (acc >= FPS_MS && ticks < MAX_TICKS_PER_FRAME) {
+        tick(now - t0);
+        acc -= FPS_MS;
+        ticks++;
+      }
+      if (ticks >= MAX_TICKS_PER_FRAME) acc = 0;
+
+      requestAnimationFrame(loop);
+    }
+
+    function ceilingAlphaForRow(r) {
+      const startFade = Math.max(0, CEILING_ROWS - TRANSITION_ROWS);
+      if (r < startFade) return 1;
+      const t = (CEILING_ROWS - r) / Math.max(1, TRANSITION_ROWS);
+      return Math.max(0.10, Math.min(1, t));
+    }
+
+    function rainAlphaForY(y) {
+      if (y >= CEILING_ROWS) return 1;
+      const t = (y + 1) / Math.max(1, TRANSITION_ROWS);
+      return Math.max(0.0, Math.min(0.85, t));
+    }
+
+    function tick(elapsedMs) {
+      ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+      // ceiling crumble
+      for (let x = 0; x < W; x++) {
+        if (Math.random() < CRUMBLE_RATE) {
+          const r = (Math.random() * CEILING_ROWS) | 0;
+          const ch = ceiling[r][x];
+          ceiling[r][x] = randChar();
+          addFrag(x, r, ch, 0.6 + Math.random() * 1.2, headColor());
+        }
+      }
+
+      // ceiling draw (blended)
+      for (let r = 0; r < CEILING_ROWS; r++) {
+        const a = ceilingAlphaForRow(r);
+        const col = (r <= 1) ? "#ffffff" : (r <= 3) ? BODY_GREEN : BODY_DARK;
+        for (let x = 0; x < W; x++) drawCell(x, r, ceiling[r][x], col, a);
+      }
+
+      // fragments
+      for (let i = frags.length - 1; i >= 0; i--) {
+        const f = frags[i];
+        f.y += f.v;
+        f.life *= 0.985;
+
+        const yy = (f.y | 0);
+        const a = Math.min(1, f.life) * (yy < CEILING_ROWS ? 0.75 : 1);
+        drawCell(f.x, yy, f.ch, f.col, a);
+
+        if (f.y > H + 2 || f.life < 0.08) frags.splice(i, 1);
+      }
+
+      // continuous rain (wrap)
+      for (let pass = 0; pass < RAIN_PASSES; pass++) {
+        for (let x = 0; x < W; x++) {
+          // speed[x] is guaranteed >= 1 now
+          if ((frame % speed[x]) !== 0) continue;
+
+          const yHead = drops[x];
+
+          const tailDraw = Math.min(len[x], TAIL_LIVE_CELLS);
+          for (let t = 0; t < tailDraw; t += TAIL_SPREAD_STEP) {
+            const yy = yHead - t;
+            if (yy < 0 || yy >= H) continue;
+
+            let col = BODY_DARK;
+            if (t === 0) col = headColor();
+            else if (t <= 2) col = BODY_GREEN;
+            else if (t <= 7) col = BODY_MID;
+
+            drawCell(x, yy, randChar(), col, rainAlphaForY(yy));
+          }
+
+          if (yHead >= 0 && yHead < H && Math.random() < 0.08) {
+            drawCell(x, yHead, randChar(), "#ffffff", rainAlphaForY(yHead));
+          }
+
+          drops[x]++;
+
+          if (drops[x] > H + len[x]) drops[x] = 0;
+        }
+      }
+
+      // Startup once
+      if (!startupDone) {
+        if (elapsedMs < startupTotal) {
+          const wordRow = Math.min(H - 2, CEILING_ROWS + 2);
+
+          const typedCount = Math.min(START_TEXT.length, (elapsedMs / TYPE_MS_PER_CHAR) | 0);
+          const typed = START_TEXT.slice(0, typedCount);
+          const baseX = drawTextCentered(typed, wordRow, BODY_GREEN);
+
+          if (elapsedMs > holdEndsAt) {
+            for (let i = 0; i < START_TEXT.length; i++) {
+              const letterStart = holdEndsAt + i * FALL_GAP_MS;
+              const t = (elapsedMs - letterStart) / FALL_DURATION_MS;
+
+              if (t >= 0 && t <= 1) {
+                const x = baseX + i;
+                const useLetter = (Math.random() < 0.60);
+                const ch = useLetter ? START_TEXT[i] : randChar();
+                addFrag(x, wordRow, ch, 0.9 + Math.random() * 1.7, useLetter ? "#ffffff" : headColor());
               }
             }
           }
+        } else {
+          startupDone = true;
         }
-      } else {
-        startupDone = true;
       }
+
+      frame++;
     }
 
-    frame++;
-  }
+    window.addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(loop);
 
-  window.addEventListener("resize", resize);
-  resize();
-  requestAnimationFrame(loop);
+  } catch (e) {
+    showErr(e);
+  }
 })();
 </script>
 </body>

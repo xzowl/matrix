@@ -1,91 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Matrix Rain</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+    canvas { display:block; width:100vw; height:100vh; }
+    /* If something breaks, show it readable */
+    #err {
+      position: fixed; inset: 0;
+      padding: 16px;
+      font: 14px/1.4 monospace;
+      color: #fff; background: #000;
+      white-space: pre-wrap;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="err"></div>
+
 <script>
-const canvas = document.getElementById("c");
-const ctx = canvas.getContext("2d");
-
-// ===== DIALS =====
-const FONT_SIZE = 16;            // smaller = more dense
-const FADE = 0.09;               // lower = longer trails
-const BASE_SPEED = 0.22;          // lower = slower fall
-const RAINBOW_HEAD_CHANCE = 0.55; // how often heads are rainbow (0..1)
-const SPARKLE_CHANCE = 0.06;      // occasional white pop
-
-const CHARS =
-  "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
-  "ハヒフヘホマミムメモヤユヨラリルレロワ" +
-  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-let drops = [];
-let speeds = [];
-let columns = 0;
-let hueBase = 0;
-
-function setup() {
-  const dpr = Math.max(1, window.devicePixelRatio || 1);
-  canvas.width = window.innerWidth * dpr;
-  canvas.height = window.innerHeight * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  columns = Math.floor(window.innerWidth / FONT_SIZE);
-  drops = [];
-  speeds = [];
-
-  for (let i = 0; i < columns; i++) {
-    drops[i] = Math.random() * window.innerHeight / FONT_SIZE;
-    speeds[i] = BASE_SPEED + Math.random() * 0.25;
+(() => {
+  const errBox = document.getElementById("err");
+  function showErr(e) {
+    errBox.style.display = "block";
+    errBox.textContent = "Matrix crashed:\n\n" + (e && e.stack ? e.stack : String(e));
   }
 
-  ctx.font = `${FONT_SIZE}px monospace`;
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-}
+  try {
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d", { alpha: false });
 
-function frame() {
-  hueBase = (hueBase + 1) % 360;
+    // ===== DIALS =====
+    const FONT_SIZE = 16;            // smaller = more letters
+    const FADE = 0.09;               // lower = longer trails
+    const BASE_SPEED = 0.22;          // lower = slower fall
+    const RAINBOW_HEAD_CHANCE = 0.60; // more rainbow (heads only)
+    const SPARKLE_CHANCE = 0.05;      // occasional white pop
 
-  // fade to black for trails
-  ctx.fillStyle = `rgba(0,0,0,${FADE})`;
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    const CHARS =
+      "アイウエオカキクケコサシスセソタチツテトナニヌネノ" +
+      "ハヒフヘホマミムメモヤユヨラリルレロワ" +
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-  for (let i = 0; i < columns; i++) {
-    const x = i * FONT_SIZE;
-    const y = drops[i] * FONT_SIZE;
+    let drops = [];
+    let speeds = [];
+    let columns = 0;
+    let hueBase = 0;
 
-    // BODY (mostly green)
-    const bodyChar = CHARS[(Math.random() * CHARS.length) | 0];
-    ctx.fillStyle = "#00ff66";
-    ctx.fillText(bodyChar, x, y);
+    function setup() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // HEAD highlight (rainbow sometimes)
-    const headY = y - FONT_SIZE * 2;
-    if (headY >= 0) {
-      const headChar = CHARS[(Math.random() * CHARS.length) | 0];
+      columns = Math.max(1, Math.floor(window.innerWidth / FONT_SIZE));
+      drops = new Array(columns);
+      speeds = new Array(columns);
 
-      if (Math.random() < RAINBOW_HEAD_CHANCE) {
-        const hue = (hueBase + i * 12) % 360;
-        ctx.fillStyle = `hsl(${hue}, 95%, 65%)`;
-      } else {
-        ctx.fillStyle = "#7CFFB6"; // bright mint-green
+      for (let i = 0; i < columns; i++) {
+        drops[i] = Math.random() * (window.innerHeight / FONT_SIZE);
+        speeds[i] = BASE_SPEED + Math.random() * 0.25;
       }
 
-      // occasional white sparkle
-      if (Math.random() < SPARKLE_CHANCE) ctx.fillStyle = "#ffffff";
-
-      ctx.fillText(headChar, x, headY);
+      ctx.font = `${FONT_SIZE}px monospace`;
+      ctx.textBaseline = "top";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
     }
 
-    drops[i] += speeds[i];
+    function frame() {
+      hueBase = (hueBase + 1) % 360;
 
-    if (y > window.innerHeight && Math.random() > 0.975) {
-      drops[i] = 0;
-      speeds[i] = BASE_SPEED + Math.random() * 0.25;
+      ctx.fillStyle = `rgba(0,0,0,${FADE})`;
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+      for (let i = 0; i < columns; i++) {
+        const x = i * FONT_SIZE;
+        const y = drops[i] * FONT_SIZE;
+
+        // body = classic green
+        const bodyChar = CHARS[(Math.random() * CHARS.length) | 0];
+        ctx.fillStyle = "#00ff66";
+        ctx.fillText(bodyChar, x, y);
+
+        // head highlight (rainbow sometimes)
+        const headY = y - FONT_SIZE * 2;
+        if (headY >= 0 && headY < window.innerHeight) {
+          const headChar = CHARS[(Math.random() * CHARS.length) | 0];
+
+          if (Math.random() < RAINBOW_HEAD_CHANCE) {
+            const hue = (hueBase + i * 14) % 360;
+            ctx.fillStyle = `hsl(${hue}, 95%, 65%)`;
+          } else {
+            ctx.fillStyle = "#7CFFB6"; // bright mint-green
+          }
+
+          if (Math.random() < SPARKLE_CHANCE) ctx.fillStyle = "#ffffff";
+          ctx.fillText(headChar, x, headY);
+        }
+
+        drops[i] += speeds[i];
+
+        if (y > window.innerHeight && Math.random() > 0.975) {
+          drops[i] = 0;
+          speeds[i] = BASE_SPEED + Math.random() * 0.25;
+        }
+      }
+
+      requestAnimationFrame(frame);
     }
+
+    window.addEventListener("resize", setup);
+    setup();
+    frame();
+  } catch (e) {
+    showErr(e);
   }
 
-  requestAnimationFrame(frame);
-}
-
-window.addEventListener("resize", setup);
-setup();
-frame();
+  window.addEventListener("error", (ev) => showErr(ev.error || ev.message));
+})();
 </script>
+</body>
+</html>
